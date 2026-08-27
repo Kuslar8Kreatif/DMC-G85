@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>G85 Monitor</title>
 <meta name="theme-color" content="#0a0b0d">
-<link rel="manifest" id="manifest-link">
 <style>
   :root{
     --bg:#0a0b0d;
@@ -228,19 +227,8 @@
 (function(){
   'use strict';
 
-  // ---------------- Manifest (inline, so it's one file) ----------------
-  const manifest = {
-    name: "G85 External Monitor",
-    short_name: "G85 Monitor",
-    start_url: ".",
-    display: "fullscreen",
-    orientation: "landscape",
-    background_color: "#0a0b0d",
-    theme_color: "#0a0b0d",
-    icons: []
-  };
-  const manifestBlob = new Blob([JSON.stringify(manifest)], {type:'application/json'});
-  document.getElementById('manifest-link').href = URL.createObjectURL(manifestBlob);
+  // This app is intentionally standalone HTML.
+  // PWA install/orientation locking needs a real manifest.json served over HTTPS.
 
   // ---------------- Elements ----------------
   const video = document.getElementById('video');
@@ -282,7 +270,8 @@
     lastFrameTime: performance.now(),
     frameCount: 0,
     fps: 0,
-    wakeLock: null
+    wakeLock: null,
+    loopRunning: false
   };
 
   // ---------------- Secure context check ----------------
@@ -340,33 +329,73 @@
   refreshBtn.addEventListener('click', () => listDevices(false));
 
   // ---------------- Start stream ----------------
-  async function startStream(deviceId){
+  function stopStream(){
     if (state.stream) {
       state.stream.getTracks().forEach(t => t.stop());
+      state.stream = null;
     }
-    const constraints = {
-      audio: false,
-      video: {
-        deviceId: deviceId ? {exact: deviceId} : undefined,
-        width: {ideal: 1920},
-        height: {ideal: 1080},
-        frameRate: {ideal: 30}
+    video.srcObject = null;
+  }
+
+  async function openCapture(deviceId){
+    // Some UVC capture cards reject exact 1080p/30 constraints.
+    // Try several constraint profiles from best quality to most compatible.
+    const profiles = [
+      {width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:60, max:60}},
+      {width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:30, max:30}},
+      {width:{ideal:1280}, height:{ideal:720},  frameRate:{ideal:60, max:60}},
+      {width:{ideal:1280}, height:{ideal:720},  frameRate:{ideal:30, max:30}},
+      true
+    ];
+    let lastError;
+    for (const profile of profiles) {
+      try {
+        const videoConstraints = profile === true ?
+          (deviceId ? {deviceId:{exact:deviceId}} : true) :
+          {...profile, ...(deviceId ? {deviceId:{exact:deviceId}} : {})};
+        return await navigator.mediaDevices.getUserMedia({audio:false, video:videoConstraints});
+      } catch (err) {
+        lastError = err;
       }
-    };
+    }
+    throw lastError || new Error('Capture card tidak dapat dibuka');
+  }
+
+  async function startStream(deviceId){
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Browser ini tidak mendukung MediaDevices / getUserMedia');
+    }
+    startBtn.disabled = true;
+    startBtn.textContent = 'Membuka capture card…';
+    bootError.style.display = 'none';
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stopStream();
+      const stream = await openCapture(deviceId);
       state.stream = stream;
       state.currentDeviceId = deviceId;
       video.srcObject = stream;
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Tidak ada metadata video dari capture card')), 8000);
+        video.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
+      });
       await video.play();
       boot.style.display = 'none';
       resizeCanvas();
       requestWakeLock();
       requestOrientationLock();
-      requestAnimationFrame(loop);
+      showControls();
+      if (!state.loopRunning) {
+        state.loopRunning = true;
+        requestAnimationFrame(loop);
+      }
     } catch(err){
+      stopStream();
       bootError.style.display = 'block';
-      bootError.textContent = 'Tidak bisa membuka sumber video: ' + err.message + '. Coba pilih perangkat lain atau refresh daftar.';
+      bootError.textContent = 'Gagal membuka capture card: ' + (err.name || '') + ' ' + (err.message || err) + '. Pastikan capture card UVC, OTG tersambung, dan halaman dibuka via HTTPS/localhost.';
+    } finally {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Mulai Monitor';
     }
   }
 
@@ -674,17 +703,22 @@
       const needsPixelAnalysis = state.zebra || state.peak || state.falseColor || state.hist;
       let imgData = null;
       if (needsPixelAnalysis) {
-        // downscale for performance
-        const scale = (state.peak || state.falseColor) ? 1 : 1;
-        analyzeCanvas.width = w; analyzeCanvas.height = h;
-        actx.drawImage(video, 0, 0, w, h);
-        imgData = actx.getImageData(0, 0, w, h);
+        // Analyze a small frame: full-HD getImageData every animation frame is too slow on Galaxy A7 2018.
+        const maxAnalysisWidth = state.peak || state.falseColor ? 640 : 480;
+        const scale = Math.min(1, maxAnalysisWidth / Math.max(1, video.videoWidth || w));
+        const aw = Math.max(2, Math.round((video.videoWidth || w) * scale));
+        const ah = Math.max(2, Math.round((video.videoHeight || h) * scale));
+        if (analyzeCanvas.width !== aw || analyzeCanvas.height !== ah) {
+          analyzeCanvas.width = aw; analyzeCanvas.height = ah;
+        }
+        actx.drawImage(video, 0, 0, aw, ah);
+        imgData = actx.getImageData(0, 0, aw, ah);
       }
 
       if (!state.cleanFeed) {
-        if (state.falseColor && imgData) drawFalseColor(imgData, w, h);
-        if (state.zebra && imgData) drawZebra(imgData, w, h);
-        if (state.peak && imgData) drawPeaking(imgData, w, h);
+        if (state.falseColor && imgData) { octx.save(); octx.scale(w/analyzeCanvas.width, h/analyzeCanvas.height); drawFalseColor(imgData, analyzeCanvas.width, analyzeCanvas.height); octx.restore(); }
+        if (state.zebra && imgData) { octx.save(); octx.scale(w/analyzeCanvas.width, h/analyzeCanvas.height); drawZebra(imgData, analyzeCanvas.width, analyzeCanvas.height); octx.restore(); }
+        if (state.peak && imgData) { octx.save(); octx.scale(w/analyzeCanvas.width, h/analyzeCanvas.height); drawPeaking(imgData, analyzeCanvas.width, analyzeCanvas.height); octx.restore(); }
         if (state.grid) drawGrid(w, h);
         if (state.safe) drawSafeArea(w, h);
       }
@@ -715,4 +749,3 @@
 </script>
 </body>
 </html>
-
