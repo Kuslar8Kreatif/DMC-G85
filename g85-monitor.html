@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>G85 Monitor</title>
 <meta name="theme-color" content="#0a0b0d">
+<link rel="manifest" id="manifest-link">
 <style>
   :root{
     --bg:#0a0b0d;
@@ -138,6 +139,21 @@
     background:rgba(0,0,0,.5); padding:4px 10px; border-radius:10px; z-index:19;
     opacity:0; transition:opacity .4s;
   }
+
+/* UVC diagnostic additions */
+#diag{position:fixed;inset:0;background:#08090b;z-index:100;display:flex;flex-direction:column;padding:18px;overflow:auto;}
+#diag.hidden{display:none}
+.diag-title{font-family:var(--mono);color:var(--amber);font-size:13px;letter-spacing:.12em}
+.diag-card{background:#131519;border:1px solid #2a2d33;border-radius:12px;padding:12px;margin-top:10px}
+.diag-line{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #24272c;font-family:var(--mono);font-size:11px}
+.diag-line:last-child{border-bottom:0}
+.ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+.diag-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.diag-actions button{min-width:0;flex:1;padding:11px;border:0;border-radius:9px;background:var(--amber);font-weight:700}
+.diag-actions button.secondary{background:#202329;color:var(--text);border:1px solid #34373d}
+#diagLog{white-space:pre-wrap;font-family:var(--mono);font-size:10px;color:#a9abb0;line-height:1.45;max-height:150px;overflow:auto}
+#deviceSelect{width:100%;min-width:0}
+#boot{z-index:80}
 </style>
 </head>
 <body>
@@ -212,6 +228,32 @@
 
 <div id="flash"></div>
 
+
+<div id="diag">
+  <div class="diag-title">G85 · UVC DIAGNOSTIC</div>
+  <div class="diag-card">
+    <div class="diag-line"><span>Browser</span><span id="dBrowser">--</span></div>
+    <div class="diag-line"><span>Secure Context</span><span id="dSecure">--</span></div>
+    <div class="diag-line"><span>MediaDevices</span><span id="dMedia">--</span></div>
+    <div class="diag-line"><span>getUserMedia</span><span id="dGum">--</span></div>
+    <div class="diag-line"><span>UVC / Video Input</span><span id="dUvc">--</span></div>
+    <div class="diag-line"><span>Selected Device</span><span id="dDevice">--</span></div>
+    <div class="diag-line"><span>Live Stream</span><span id="dLive">--</span></div>
+    <div class="diag-line"><span>Resolution</span><span id="dRes">--</span></div>
+    <div class="diag-line"><span>FPS</span><span id="dFps">--</span></div>
+  </div>
+  <div class="diag-card">
+    <div style="font-size:12px;font-weight:700;margin-bottom:7px">Perangkat video terdeteksi</div>
+    <select id="diagDevice"></select>
+  </div>
+  <div class="diag-card"><div style="font-size:12px;font-weight:700;margin-bottom:7px">Log</div><div id="diagLog"></div></div>
+  <div class="diag-actions">
+    <button id="diagStart">TEST UVC</button>
+    <button id="diagRefresh" class="secondary">REFRESH USB</button>
+    <button id="diagContinue" class="secondary">LANJUT MONITOR</button>
+  </div>
+</div>
+
 <!-- Boot screen -->
 <div id="boot">
   <div class="logo">G85 · External Monitor</div>
@@ -227,8 +269,19 @@
 (function(){
   'use strict';
 
-  // This app is intentionally standalone HTML.
-  // PWA install/orientation locking needs a real manifest.json served over HTTPS.
+  // ---------------- Manifest (inline, so it's one file) ----------------
+  const manifest = {
+    name: "G85 External Monitor",
+    short_name: "G85 Monitor",
+    start_url: ".",
+    display: "fullscreen",
+    orientation: "landscape",
+    background_color: "#0a0b0d",
+    theme_color: "#0a0b0d",
+    icons: []
+  };
+  const manifestBlob = new Blob([JSON.stringify(manifest)], {type:'application/json'});
+  document.getElementById('manifest-link').href = URL.createObjectURL(manifestBlob);
 
   // ---------------- Elements ----------------
   const video = document.getElementById('video');
@@ -250,6 +303,19 @@
   const flash = document.getElementById('flash');
   const panel = document.getElementById('panel');
   const panelBackdrop = document.getElementById('panel-backdrop');
+  const diag = document.getElementById('diag');
+  const dBrowser = document.getElementById('dBrowser');
+  const dSecure = document.getElementById('dSecure');
+  const dMedia = document.getElementById('dMedia');
+  const dGum = document.getElementById('dGum');
+  const dUvc = document.getElementById('dUvc');
+  const dDevice = document.getElementById('dDevice');
+  const dLive = document.getElementById('dLive');
+  const dRes = document.getElementById('dRes');
+  const dFps = document.getElementById('dFps');
+  const diagDevice = document.getElementById('diagDevice');
+  const diagLog = document.getElementById('diagLog');
+
 
   // Offscreen canvas for pixel analysis (small, for perf)
   const analyzeCanvas = document.createElement('canvas');
@@ -270,8 +336,7 @@
     lastFrameTime: performance.now(),
     frameCount: 0,
     fps: 0,
-    wakeLock: null,
-    loopRunning: false
+    wakeLock: null
   };
 
   // ---------------- Secure context check ----------------
@@ -280,129 +345,122 @@
     bootError.textContent = 'Halaman ini harus dibuka lewat HTTPS atau localhost agar kamera bisa diakses browser. Buka file ini dari server lokal (mis. via Live Server / python -m http.server), bukan langsung dari file://.';
   }
 
-  // ---------------- Enumerate devices ----------------
+  // ---------------- UVC diagnostics / device enumeration ----------------
+  function logDiag(msg){
+    const t = new Date().toLocaleTimeString();
+    diagLog.textContent += '['+t+'] '+msg+'\n';
+    diagLog.scrollTop = diagLog.scrollHeight;
+  }
+  function setDiag(el, text, cls){ el.textContent=text; el.className=cls||''; }
+  function browserName(){
+    const ua=navigator.userAgent;
+    if(/SamsungBrowser/i.test(ua)) return 'Samsung Internet';
+    if(/Chrome/i.test(ua)) return 'Chrome';
+    return 'Android browser';
+  }
+
   async function listDevices(preserveSelection){
+    dBrowser.textContent=browserName();
+    setDiag(dSecure, window.isSecureContext ? 'YES':'NO', window.isSecureContext?'ok':'bad');
+    setDiag(dMedia, navigator.mediaDevices ? 'YES':'NO', navigator.mediaDevices?'ok':'bad');
+    setDiag(dGum, navigator.mediaDevices?.getUserMedia ? 'YES':'NO', navigator.mediaDevices?.getUserMedia?'ok':'bad');
+    logDiag('Enumerating video devices...');
+    if(!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices){
+      setDiag(dUvc,'UNSUPPORTED','bad'); return;
+    }
+    let tmp=null;
     try{
-      // Need a permission prompt first so labels are populated
-      let tmpStream = null;
-      try {
-        tmpStream = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
-      } catch(e){ /* user may deny; still try enumerate */ }
-
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoInputs = devices.filter(d => d.kind === 'videoinput');
-      state.videoDevices = videoInputs;
-
-      if (tmpStream) tmpStream.getTracks().forEach(t => t.stop());
-
-      deviceSelect.innerHTML = '';
-      if (videoInputs.length === 0) {
-        deviceSelect.innerHTML = '<option>Tidak ada perangkat video ditemukan</option>';
-        bootError.style.display = 'block';
-        bootError.textContent = 'Capture card tidak terdeteksi. Cek sambungan kabel OTG, dan pastikan capture card mendukung UVC (webcam standar).';
+      // Android browsers often hide USB-camera labels until permission is granted.
+      tmp=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+      logDiag('Temporary camera permission granted.');
+    }catch(e){ logDiag('Permission test: '+e.name+' - '+e.message); }
+    try{
+      const devices=await navigator.mediaDevices.enumerateDevices();
+      const vids=devices.filter(d=>d.kind==='videoinput');
+      state.videoDevices=vids;
+      setDiag(dUvc, vids.length ? vids.length+' VIDEO INPUT':'NO VIDEO INPUT', vids.length?'ok':'bad');
+      deviceSelect.innerHTML=''; diagDevice.innerHTML='';
+      vids.forEach((d,i)=>{
+        const label=d.label || ('Video input '+(i+1));
+        const o=document.createElement('option'); o.value=d.deviceId; o.textContent=label; deviceSelect.appendChild(o);
+        const o2=o.cloneNode(true); diagDevice.appendChild(o2);
+        logDiag('['+(i+1)+'] '+label+' | '+(d.deviceId?'deviceId OK':'no deviceId'));
+      });
+      if(!vids.length){
+        const msg='NO UVC VIDEO INPUT. Android/browser tidak mengekspos capture card sebagai videoinput.';
+        bootError.style.display='block'; bootError.textContent=msg; logDiag(msg);
+        diagDevice.innerHTML='<option>Tidak ada UVC video input</option>';
         return;
       }
-      bootError.style.display = 'none';
-      videoInputs.forEach((d, i) => {
-        const opt = document.createElement('option');
-        opt.value = d.deviceId;
-        opt.textContent = d.label || ('Kamera ' + (i+1));
-        // Guess: capture cards often have generic names like "USB Video" / "UVC Camera"
-        deviceSelect.appendChild(opt);
-      });
-
-      if (preserveSelection && state.currentDeviceId) {
-        deviceSelect.value = state.currentDeviceId;
-      } else {
-        // try to auto-pick a device that looks like a capture card, else last device
-        const guess = videoInputs.find(d => /usb|capture|hdmi|uvc|video/i.test(d.label));
-        deviceSelect.value = guess ? guess.deviceId : videoInputs[videoInputs.length-1].deviceId;
+      let selected=state.currentDeviceId && vids.some(v=>v.deviceId===state.currentDeviceId) ? state.currentDeviceId : null;
+      if(!selected){
+        const guess=vids.find(d=>/usb|capture|hdmi|uvc|video|camera/i.test(d.label));
+        selected=guess?.deviceId || vids[0].deviceId;
       }
-    } catch(err){
-      bootError.style.display = 'block';
-      bootError.textContent = 'Gagal mengakses daftar kamera: ' + err.message;
+      deviceSelect.value=selected; diagDevice.value=selected;
+      dDevice.textContent=(vids.find(v=>v.deviceId===selected)?.label)||'selected';
+      if(tmp) tmp.getTracks().forEach(t=>t.stop());
+      bootError.style.display='none';
+    }catch(e){
+      setDiag(dUvc,'ERROR','bad'); logDiag('enumerateDevices: '+e.name+' - '+e.message);
     }
   }
 
-  navigator.mediaDevices.addEventListener?.('devicechange', () => listDevices(true));
-  listDevices(false);
-  refreshBtn.addEventListener('click', () => listDevices(false));
+  diagDevice.addEventListener('change',()=>{deviceSelect.value=diagDevice.value; dDevice.textContent=diagDevice.options[diagDevice.selectedIndex]?.text||'--';});
+  deviceSelect.addEventListener('change',()=>{diagDevice.value=deviceSelect.value;});
+  navigator.mediaDevices?.addEventListener?.('devicechange',()=>listDevices(true));
+  document.getElementById('refreshBtn').addEventListener('click',()=>listDevices(false));
+  document.getElementById('diagRefresh').addEventListener('click',()=>listDevices(true));
 
   // ---------------- Start stream ----------------
-  function stopStream(){
-    if (state.stream) {
-      state.stream.getTracks().forEach(t => t.stop());
-      state.stream = null;
-    }
-    video.srcObject = null;
-  }
-
-  async function openCapture(deviceId){
-    // Some UVC capture cards reject exact 1080p/30 constraints.
-    // Try several constraint profiles from best quality to most compatible.
-    const profiles = [
-      {width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:60, max:60}},
-      {width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:30, max:30}},
-      {width:{ideal:1280}, height:{ideal:720},  frameRate:{ideal:60, max:60}},
-      {width:{ideal:1280}, height:{ideal:720},  frameRate:{ideal:30, max:30}},
-      true
-    ];
-    let lastError;
-    for (const profile of profiles) {
-      try {
-        const videoConstraints = profile === true ?
-          (deviceId ? {deviceId:{exact:deviceId}} : true) :
-          {...profile, ...(deviceId ? {deviceId:{exact:deviceId}} : {})};
-        return await navigator.mediaDevices.getUserMedia({audio:false, video:videoConstraints});
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    throw lastError || new Error('Capture card tidak dapat dibuka');
-  }
-
   async function startStream(deviceId){
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Browser ini tidak mendukung MediaDevices / getUserMedia');
+    if(!navigator.mediaDevices?.getUserMedia){
+      bootError.style.display='block'; bootError.textContent='Browser tidak mendukung getUserMedia.'; return;
     }
-    startBtn.disabled = true;
-    startBtn.textContent = 'Membuka capture card…';
-    bootError.style.display = 'none';
-    try {
-      stopStream();
-      const stream = await openCapture(deviceId);
-      state.stream = stream;
-      state.currentDeviceId = deviceId;
-      video.srcObject = stream;
-
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Tidak ada metadata video dari capture card')), 8000);
-        video.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
-      });
-      await video.play();
-      boot.style.display = 'none';
-      resizeCanvas();
-      requestWakeLock();
-      requestOrientationLock();
-      showControls();
-      if (!state.loopRunning) {
-        state.loopRunning = true;
-        requestAnimationFrame(loop);
-      }
-    } catch(err){
-      stopStream();
-      bootError.style.display = 'block';
-      bootError.textContent = 'Gagal membuka capture card: ' + (err.name || '') + ' ' + (err.message || err) + '. Pastikan capture card UVC, OTG tersambung, dan halaman dibuka via HTTPS/localhost.';
-    } finally {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Mulai Monitor';
+    if(state.stream) state.stream.getTracks().forEach(t=>t.stop());
+    const attempts=[
+      {width:{exact:1280},height:{exact:720},frameRate:{ideal:30}},
+      {width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30}},
+      {width:{ideal:1280},height:{ideal:720}},
+      {}
+    ];
+    let stream=null,lastErr=null;
+    for(const v of attempts){
+      const constraints={audio:false,video:{...v}};
+      if(deviceId) constraints.video.deviceId={exact:deviceId};
+      try{
+        logDiag('Trying constraints: '+JSON.stringify(constraints.video));
+        stream=await navigator.mediaDevices.getUserMedia(constraints);
+        break;
+      }catch(e){ lastErr=e; logDiag('Failed: '+e.name+' - '+e.message); }
     }
+    if(!stream){
+      setDiag(dLive,'FAILED','bad');
+      bootError.style.display='block';
+      bootError.textContent='Capture card gagal dibuka: '+(lastErr?.name||'Unknown')+'. Coba 720p, cek OTG/UVC, dan tutup aplikasi lain yang memakai kamera.';
+      return;
+    }
+    state.stream=stream; state.currentDeviceId=deviceId; video.srcObject=stream;
+    stream.getVideoTracks()[0].addEventListener('ended',()=>{
+      setDiag(dLive,'ENDED','bad'); logDiag('Video track ended. Kemungkinan USB/OTG terputus.');
+    });
+    await video.play();
+    const track=stream.getVideoTracks()[0];
+    const settings=track.getSettings ? track.getSettings() : {};
+    dDevice.textContent=track.label||'UVC Video';
+    dRes.textContent=(settings.width&&settings.height)?settings.width+'×'+settings.height:'--';
+    dFps.textContent=settings.frameRate?settings.frameRate.toFixed(1)+' fps':'--';
+    setDiag(dLive,'LIVE','ok');
+    logDiag('SUCCESS: '+track.label+' | '+dRes.textContent+' | '+dFps.textContent);
+    boot.style.display='none'; diag.classList.add('hidden');
+    resizeCanvas(); requestWakeLock(); requestOrientationLock();
+    frameTimes=[]; requestAnimationFrame(loop);
   }
 
-  startBtn.addEventListener('click', () => {
-    const id = deviceSelect.value;
-    startStream(id);
-  });
+  startBtn.addEventListener('click', () => startStream(deviceSelect.value));
+  document.getElementById('diagStart').addEventListener('click',()=>startStream(diagDevice.value || deviceSelect.value));
+  document.getElementById('diagContinue').addEventListener('click',()=>{ diag.classList.add('hidden'); boot.style.display='flex'; });
+
 
   // ---------------- Wake Lock ----------------
   async function requestWakeLock(){
@@ -703,22 +761,24 @@
       const needsPixelAnalysis = state.zebra || state.peak || state.falseColor || state.hist;
       let imgData = null;
       if (needsPixelAnalysis) {
-        // Analyze a small frame: full-HD getImageData every animation frame is too slow on Galaxy A7 2018.
-        const maxAnalysisWidth = state.peak || state.falseColor ? 640 : 480;
-        const scale = Math.min(1, maxAnalysisWidth / Math.max(1, video.videoWidth || w));
-        const aw = Math.max(2, Math.round((video.videoWidth || w) * scale));
-        const ah = Math.max(2, Math.round((video.videoHeight || h) * scale));
-        if (analyzeCanvas.width !== aw || analyzeCanvas.height !== ah) {
-          analyzeCanvas.width = aw; analyzeCanvas.height = ah;
-        }
+        // downscale for performance
+        const maxW = 640;
+        const aw = Math.min(w, maxW);
+        const ah = Math.max(1, Math.round(aw * h / w));
+        analyzeCanvas.width = aw; analyzeCanvas.height = ah;
         actx.drawImage(video, 0, 0, aw, ah);
-        imgData = actx.getImageData(0, 0, aw, ah);
+        imgData = actx.getImageData(0, 0, analyzeCanvas.width, analyzeCanvas.height);
+        // Pixel-analysis overlays are rendered at analysis resolution, then composited.
+        if (analyzeCanvas.width !== w || analyzeCanvas.height !== h) {
+          // Overlay analysis functions expect their image dimensions; use a scaled canvas space.
+        }
       }
 
       if (!state.cleanFeed) {
-        if (state.falseColor && imgData) { octx.save(); octx.scale(w/analyzeCanvas.width, h/analyzeCanvas.height); drawFalseColor(imgData, analyzeCanvas.width, analyzeCanvas.height); octx.restore(); }
-        if (state.zebra && imgData) { octx.save(); octx.scale(w/analyzeCanvas.width, h/analyzeCanvas.height); drawZebra(imgData, analyzeCanvas.width, analyzeCanvas.height); octx.restore(); }
-        if (state.peak && imgData) { octx.save(); octx.scale(w/analyzeCanvas.width, h/analyzeCanvas.height); drawPeaking(imgData, analyzeCanvas.width, analyzeCanvas.height); octx.restore(); }
+        const aw = imgData ? analyzeCanvas.width : w, ah = imgData ? analyzeCanvas.height : h;
+        if (state.falseColor && imgData) { octx.save(); octx.scale(w/aw,h/ah); drawFalseColor(imgData, aw, ah); octx.restore(); }
+        if (state.zebra && imgData) { octx.save(); octx.scale(w/aw,h/ah); drawZebra(imgData, aw, ah); octx.restore(); }
+        if (state.peak && imgData) { octx.save(); octx.scale(w/aw,h/ah); drawPeaking(imgData, aw, ah); octx.restore(); }
         if (state.grid) drawGrid(w, h);
         if (state.safe) drawSafeArea(w, h);
       }
