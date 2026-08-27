@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>G85 Monitor</title>
+<meta name="theme-color" content="#0a0b0d">
+<link rel="manifest" id="manifest-link">
+<style>
+  :root{
+    --bg:#0a0b0d;
+    --panel:#131519;
+    --panel-line:#2a2d33;
+    --amber:#ffb020;
+    --amber-dim:#8a5f14;
+    --red:#ff4d4d;
+    --green:#3ddc84;
+    --cyan:#4fd8e8;
+    --text:#e8e6e0;
+    --text-dim:#8b8d92;
+    --mono: 'SF Mono', 'Roboto Mono', 'Courier New', monospace;
+    --sans: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none;}
+  html,body{
+    margin:0; padding:0; width:100%; height:100%; overflow:hidden;
+    background:#000; font-family:var(--sans); color:var(--text);
+    touch-action:none;
+  }
+  #stage{
+    position:fixed; inset:0; background:#000;
+    display:flex; align-items:center; justify-content:center;
+  }
+  video{
+    width:100%; height:100%; object-fit:contain; background:#000;
+    display:block;
+  }
+  canvas#overlay{
+    position:absolute; inset:0; width:100%; height:100%;
+    pointer-events:none;
+  }
+
+  /* ---------- Boot / device select screen ---------- */
+  #boot{
+    position:fixed; inset:0; background:var(--bg);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:18px; z-index:50; padding:24px; text-align:center;
+  }
+  #boot .logo{
+    font-family:var(--mono); letter-spacing:.35em; font-size:12px;
+    color:var(--amber); text-transform:uppercase;
+  }
+  #boot h1{ font-size:22px; margin:0; font-weight:600; }
+  #boot p{ color:var(--text-dim); font-size:13px; max-width:320px; line-height:1.5; margin:0;}
+  select, .btn{
+    font-family:var(--sans); font-size:15px; border-radius:10px;
+    border:1px solid var(--panel-line); background:var(--panel); color:var(--text);
+    padding:12px 18px; min-width:260px;
+  }
+  .btn{
+    background:var(--amber); color:#1a1300; border:none; font-weight:700;
+    cursor:pointer;
+  }
+  .btn.secondary{
+    background:var(--panel); color:var(--text); border:1px solid var(--panel-line); font-weight:500;
+  }
+  #boot-error{
+    color:var(--red); font-size:13px; display:none; max-width:320px;
+  }
+
+  /* ---------- Top status bar ---------- */
+  #statusbar{
+    position:absolute; top:0; left:0; right:0;
+    display:flex; justify-content:space-between; align-items:center;
+    padding:8px 14px; font-family:var(--mono); font-size:11px; color:var(--text-dim);
+    background:linear-gradient(to bottom, rgba(0,0,0,.65), transparent);
+    z-index:20; pointer-events:none;
+    transition:opacity .3s;
+  }
+  #statusbar span{ display:flex; align-items:center; gap:5px; }
+  .dot{ width:6px; height:6px; border-radius:50%; background:var(--green); display:inline-block; }
+
+  /* ---------- Bottom control dock ---------- */
+  #dock{
+    position:absolute; left:0; right:0; bottom:0;
+    padding:10px 10px calc(10px + env(safe-area-inset-bottom));
+    background:linear-gradient(to top, rgba(0,0,0,.75), transparent);
+    display:flex; flex-direction:column; gap:8px; z-index:20;
+    transition:opacity .3s, transform .3s;
+  }
+  .row{ display:flex; gap:8px; overflow-x:auto; scrollbar-width:none; padding-bottom:2px;}
+  .row::-webkit-scrollbar{display:none;}
+  .chip{
+    flex:0 0 auto; font-family:var(--sans); font-size:12px; font-weight:600;
+    padding:9px 13px; border-radius:20px; border:1px solid var(--panel-line);
+    background:rgba(19,21,25,.85); color:var(--text-dim); white-space:nowrap;
+    display:flex; align-items:center; gap:6px;
+  }
+  .chip.on{ background:var(--amber); color:#1a1300; border-color:var(--amber); }
+  .chip svg{ width:14px; height:14px; }
+
+  #hidden-toggle{
+    position:absolute; inset:0; z-index:15; background:transparent;
+  }
+
+  .fade{ opacity:0 !important; pointer-events:none; }
+
+  /* ---------- Panels ---------- */
+  #panel-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:30; display:none;
+  }
+  #panel{
+    position:fixed; left:10px; right:10px; bottom:calc(10px + env(safe-area-inset-bottom));
+    background:var(--panel); border:1px solid var(--panel-line); border-radius:16px;
+    z-index:31; display:none; max-height:60vh; overflow-y:auto; padding:14px;
+  }
+  #panel h3{ margin:0 0 10px; font-size:13px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.08em;}
+  .slider-row{ margin-bottom:14px; }
+  .slider-row label{ display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;}
+  .slider-row input[type=range]{ width:100%; accent-color:var(--amber); }
+  .swatches{ display:flex; gap:8px; margin-top:6px; }
+  .swatch{ width:30px; height:30px; border-radius:8px; border:2px solid transparent; }
+  .swatch.active{ border-color:#fff; }
+
+  /* ---------- Histogram ---------- */
+  #histCanvas{
+    position:absolute; top:36px; right:10px; width:120px; height:70px;
+    background:rgba(0,0,0,.5); border-radius:6px; z-index:19;
+  }
+
+  /* ---------- Snapshot flash ---------- */
+  #flash{
+    position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:60;
+  }
+
+  #wake-badge{
+    position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
+    font-family:var(--mono); font-size:10px; color:var(--text-dim);
+    background:rgba(0,0,0,.5); padding:4px 10px; border-radius:10px; z-index:19;
+    opacity:0; transition:opacity .4s;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="overlay"></canvas>
+  <canvas id="histCanvas" width="120" height="70" style="display:none;"></canvas>
+</div>
+
+<div id="hidden-toggle"></div>
+
+<div id="statusbar">
+  <span><span class="dot" id="liveDot"></span><span id="resInfo">--</span></span>
+  <span id="fpsInfo">-- fps</span>
+  <span id="clock">--:--</span>
+</div>
+
+<div id="wake-badge">Layar tetap menyala</div>
+
+<div id="dock">
+  <div class="row" id="mainRow">
+    <div class="chip" id="btnGrid">▦ Grid</div>
+    <div class="chip" id="btnSafe">▭ Aspect</div>
+    <div class="chip" id="btnZebra">⚡ Zebra</div>
+    <div class="chip" id="btnPeak">◆ Peaking</div>
+    <div class="chip" id="btnHist">📊 Histogram</div>
+    <div class="chip" id="btnFalse">🎨 False Color</div>
+  </div>
+  <div class="row" id="secondRow">
+    <div class="chip" id="btnSettings">⚙ Setelan</div>
+    <div class="chip" id="btnFullscreen">⤢ Fullscreen</div>
+    <div class="chip" id="btnSnap">◎ Snapshot</div>
+    <div class="chip" id="btnClean">✕ Clean Feed</div>
+    <div class="chip" id="btnSwitchCam">↺ Ganti Sumber</div>
+  </div>
+</div>
+
+<div id="panel-backdrop"></div>
+<div id="panel">
+  <h3>Zebra threshold</h3>
+  <div class="slider-row">
+    <label><span>Overexposure</span><span id="zebraVal">95%</span></label>
+    <input type="range" id="zebraSlider" min="70" max="100" value="95">
+  </div>
+  <h3>Focus peaking</h3>
+  <div class="slider-row">
+    <label><span>Sensitivitas edge</span><span id="peakVal">40</span></label>
+    <input type="range" id="peakSlider" min="10" max="100" value="40">
+  </div>
+  <div class="swatches" id="peakColors">
+    <div class="swatch active" data-color="#ff3b30" style="background:#ff3b30"></div>
+    <div class="swatch" data-color="#ffd60a" style="background:#ffd60a"></div>
+    <div class="swatch" data-color="#3ddc84" style="background:#3ddc84"></div>
+    <div class="swatch" data-color="#4fd8e8" style="background:#4fd8e8"></div>
+  </div>
+  <h3>Aspect ratio guide</h3>
+  <div class="row" style="overflow:visible; flex-wrap:wrap;">
+    <div class="chip on" data-ar="0">Off</div>
+    <div class="chip" data-ar="1.7778">16:9</div>
+    <div class="chip" data-ar="1.3333">4:3</div>
+    <div class="chip" data-ar="1">1:1</div>
+    <div class="chip" data-ar="2.39">2.39:1</div>
+  </div>
+  <h3 style="margin-top:14px;">Grid style</h3>
+  <div class="row" style="overflow:visible; flex-wrap:wrap;">
+    <div class="chip on" data-grid="thirds">Rule of Thirds</div>
+    <div class="chip" data-grid="grid4">Grid 4×4</div>
+    <div class="chip" data-grid="cross">Center Cross</div>
+  </div>
+</div>
+
+<div id="flash"></div>
+
+<!-- Boot screen -->
+<div id="boot">
+  <div class="logo">G85 · External Monitor</div>
+  <h1>Sambungkan Sumber Video</h1>
+  <p>Pastikan Lumix DMC-G85 sudah menyala, tersambung ke capture card HDMI→USB, lalu capture card tersambung ke HP via kabel OTG.</p>
+  <select id="deviceSelect"><option>Mencari perangkat…</option></select>
+  <button class="btn" id="startBtn">Mulai Monitor</button>
+  <button class="btn secondary" id="refreshBtn">🔄 Refresh daftar perangkat</button>
+  <div id="boot-error"></div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  // ---------------- Manifest (inline, so it's one file) ----------------
+  const manifest = {
+    name: "G85 External Monitor",
+    short_name: "G85 Monitor",
+    start_url: ".",
+    display: "fullscreen",
+    orientation: "landscape",
+    background_color: "#0a0b0d",
+    theme_color: "#0a0b0d",
+    icons: []
+  };
+  const manifestBlob = new Blob([JSON.stringify(manifest)], {type:'application/json'});
+  document.getElementById('manifest-link').href = URL.createObjectURL(manifestBlob);
+
+  // ---------------- Elements ----------------
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const octx = overlay.getContext('2d', {willReadFrequently:false});
+  const histCanvas = document.getElementById('histCanvas');
+  const hctx = histCanvas.getContext('2d');
+  const boot = document.getElementById('boot');
+  const deviceSelect = document.getElementById('deviceSelect');
+  const startBtn = document.getElementById('startBtn');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const bootError = document.getElementById('boot-error');
+  const statusbar = document.getElementById('statusbar');
+  const dock = document.getElementById('dock');
+  const resInfo = document.getElementById('resInfo');
+  const fpsInfo = document.getElementById('fpsInfo');
+  const clockEl = document.getElementById('clock');
+  const wakeBadge = document.getElementById('wake-badge');
+  const flash = document.getElementById('flash');
+  const panel = document.getElementById('panel');
+  const panelBackdrop = document.getElementById('panel-backdrop');
+
+  // Offscreen canvas for pixel analysis (small, for perf)
+  const analyzeCanvas = document.createElement('canvas');
+  const actx = analyzeCanvas.getContext('2d', {willReadFrequently:true});
+
+  // ---------------- State ----------------
+  const state = {
+    grid: false, gridStyle: 'thirds',
+    safe: false, ar: 0,
+    zebra: false, zebraThreshold: 95,
+    peak: false, peakSensitivity: 40, peakColor: '#ff3b30',
+    hist: false,
+    falseColor: false,
+    cleanFeed: false,
+    stream: null,
+    currentDeviceId: null,
+    videoDevices: [],
+    lastFrameTime: performance.now(),
+    frameCount: 0,
+    fps: 0,
+    wakeLock: null
+  };
+
+  // ---------------- Secure context check ----------------
+  if (!(window.isSecureContext)) {
+    bootError.style.display = 'block';
+    bootError.textContent = 'Halaman ini harus dibuka lewat HTTPS atau localhost agar kamera bisa diakses browser. Buka file ini dari server lokal (mis. via Live Server / python -m http.server), bukan langsung dari file://.';
+  }
+
+  // ---------------- Enumerate devices ----------------
+  async function listDevices(preserveSelection){
+    try{
+      // Need a permission prompt first so labels are populated
+      let tmpStream = null;
+      try {
+        tmpStream = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
+      } catch(e){ /* user may deny; still try enumerate */ }
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter(d => d.kind === 'videoinput');
+      state.videoDevices = videoInputs;
+
+      if (tmpStream) tmpStream.getTracks().forEach(t => t.stop());
+
+      deviceSelect.innerHTML = '';
+      if (videoInputs.length === 0) {
+        deviceSelect.innerHTML = '<option>Tidak ada perangkat video ditemukan</option>';
+        bootError.style.display = 'block';
+        bootError.textContent = 'Capture card tidak terdeteksi. Cek sambungan kabel OTG, dan pastikan capture card mendukung UVC (webcam standar).';
+        return;
+      }
+      bootError.style.display = 'none';
+      videoInputs.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || ('Kamera ' + (i+1));
+        // Guess: capture cards often have generic names like "USB Video" / "UVC Camera"
+        deviceSelect.appendChild(opt);
+      });
+
+      if (preserveSelection && state.currentDeviceId) {
+        deviceSelect.value = state.currentDeviceId;
+      } else {
+        // try to auto-pick a device that looks like a capture card, else last device
+        const guess = videoInputs.find(d => /usb|capture|hdmi|uvc|video/i.test(d.label));
+        deviceSelect.value = guess ? guess.deviceId : videoInputs[videoInputs.length-1].deviceId;
+      }
+    } catch(err){
+      bootError.style.display = 'block';
+      bootError.textContent = 'Gagal mengakses daftar kamera: ' + err.message;
+    }
+  }
+
+  navigator.mediaDevices.addEventListener?.('devicechange', () => listDevices(true));
+  listDevices(false);
+  refreshBtn.addEventListener('click', () => listDevices(false));
+
+  // ---------------- Start stream ----------------
+  async function startStream(deviceId){
+    if (state.stream) {
+      state.stream.getTracks().forEach(t => t.stop());
+    }
+    const constraints = {
+      audio: false,
+      video: {
+        deviceId: deviceId ? {exact: deviceId} : undefined,
+        width: {ideal: 1920},
+        height: {ideal: 1080},
+        frameRate: {ideal: 30}
+      }
+    };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      state.stream = stream;
+      state.currentDeviceId = deviceId;
+      video.srcObject = stream;
+      await video.play();
+      boot.style.display = 'none';
+      resizeCanvas();
+      requestWakeLock();
+      requestOrientationLock();
+      requestAnimationFrame(loop);
+    } catch(err){
+      bootError.style.display = 'block';
+      bootError.textContent = 'Tidak bisa membuka sumber video: ' + err.message + '. Coba pilih perangkat lain atau refresh daftar.';
+    }
+  }
+
+  startBtn.addEventListener('click', () => {
+    const id = deviceSelect.value;
+    startStream(id);
+  });
+
+  // ---------------- Wake Lock ----------------
+  async function requestWakeLock(){
+    try {
+      if ('wakeLock' in navigator) {
+        state.wakeLock = await navigator.wakeLock.request('screen');
+        wakeBadge.style.opacity = '1';
+        setTimeout(() => wakeBadge.style.opacity = '0', 2500);
+        document.addEventListener('visibilitychange', async () => {
+          if (document.visibilityState === 'visible' && state.stream) {
+            try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
+          }
+        });
+      }
+    } catch(e){ /* not supported / denied, silently ignore */ }
+  }
+
+  // ---------------- Orientation lock ----------------
+  async function requestOrientationLock(){
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock('landscape');
+      }
+    } catch(e){ /* not supported on this browser, ignore */ }
+  }
+
+  // ---------------- Fullscreen ----------------
+  document.getElementById('btnFullscreen').addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(()=>{});
+    } else {
+      document.exitFullscreen?.();
+    }
+  });
+
+  // ---------------- Canvas sizing ----------------
+  function resizeCanvas(){
+    const rect = video.getBoundingClientRect();
+    overlay.width = video.videoWidth || rect.width;
+    overlay.height = video.videoHeight || rect.height;
+    overlay.style.width = rect.width + 'px';
+    overlay.style.height = rect.height + 'px';
+  }
+  window.addEventListener('resize', resizeCanvas);
+  video.addEventListener('loadedmetadata', () => {
+    resizeCanvas();
+    resInfo.textContent = video.videoWidth + '×' + video.videoHeight;
+  });
+
+  // ---------------- Toggle chips ----------------
+  function toggleChip(el, key){
+    el.addEventListener('click', () => {
+      state[key] = !state[key];
+      el.classList.toggle('on', state[key]);
+    });
+  }
+  toggleChip(document.getElementById('btnGrid'), 'grid');
+  toggleChip(document.getElementById('btnSafe'), 'safe');
+  toggleChip(document.getElementById('btnZebra'), 'zebra');
+  toggleChip(document.getElementById('btnPeak'), 'peak');
+  toggleChip(document.getElementById('btnFalse'), 'falseColor');
+
+  document.getElementById('btnHist').addEventListener('click', (e) => {
+    state.hist = !state.hist;
+    e.currentTarget.classList.toggle('on', state.hist);
+    histCanvas.style.display = state.hist ? 'block' : 'none';
+  });
+
+  document.getElementById('btnClean').addEventListener('click', (e) => {
+    state.cleanFeed = !state.cleanFeed;
+    e.currentTarget.classList.toggle('on', state.cleanFeed);
+    dock.classList.toggle('fade', state.cleanFeed);
+    statusbar.classList.toggle('fade', state.cleanFeed);
+    histCanvas.classList.toggle('fade', state.cleanFeed);
+  });
+
+  document.getElementById('btnSwitchCam').addEventListener('click', () => {
+    boot.style.display = 'flex';
+    listDevices(true);
+  });
+
+  document.getElementById('btnSettings').addEventListener('click', () => {
+    panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+    panelBackdrop.style.display = panel.style.display;
+  });
+  panelBackdrop.addEventListener('click', () => {
+    panel.style.display = 'none';
+    panelBackdrop.style.display = 'none';
+  });
+
+  document.getElementById('zebraSlider').addEventListener('input', (e) => {
+    state.zebraThreshold = +e.target.value;
+    document.getElementById('zebraVal').textContent = e.target.value + '%';
+  });
+  document.getElementById('peakSlider').addEventListener('input', (e) => {
+    state.peakSensitivity = +e.target.value;
+    document.getElementById('peakVal').textContent = e.target.value;
+  });
+  document.querySelectorAll('#peakColors .swatch').forEach(sw => {
+    sw.addEventListener('click', () => {
+      document.querySelectorAll('#peakColors .swatch').forEach(s => s.classList.remove('active'));
+      sw.classList.add('active');
+      state.peakColor = sw.dataset.color;
+    });
+  });
+  document.querySelectorAll('[data-ar]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('[data-ar]').forEach(c => c.classList.remove('on'));
+      chip.classList.add('on');
+      state.ar = +chip.dataset.ar;
+    });
+  });
+  document.querySelectorAll('[data-grid]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('[data-grid]').forEach(c => c.classList.remove('on'));
+      chip.classList.add('on');
+      state.gridStyle = chip.dataset.grid;
+    });
+  });
+
+  // ---------------- Auto-hide dock ----------------
+  let hideTimer = null;
+  function showControls(){
+    dock.classList.remove('fade');
+    statusbar.classList.remove('fade');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      if (!state.cleanFeed && panel.style.display !== 'block') {
+        dock.classList.add('fade');
+        statusbar.classList.add('fade');
+      }
+    }, 4000);
+  }
+  document.getElementById('hidden-toggle').addEventListener('click', showControls);
+  document.getElementById('stage').addEventListener('click', showControls);
+  showControls();
+
+  // ---------------- Snapshot ----------------
+  document.getElementById('btnSnap').addEventListener('click', () => {
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth; c.height = video.videoHeight;
+    const cctx = c.getContext('2d');
+    cctx.drawImage(video, 0, 0, c.width, c.height);
+    c.toBlob((blob) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'g85-snapshot-' + Date.now() + '.jpg';
+      a.click();
+    }, 'image/jpeg', 0.92);
+
+    flash.style.transition = 'none';
+    flash.style.opacity = '0.85';
+    requestAnimationFrame(() => {
+      flash.style.transition = 'opacity .35s';
+      flash.style.opacity = '0';
+    });
+  });
+
+  // ---------------- Clock ----------------
+  setInterval(() => {
+    const d = new Date();
+    clockEl.textContent = d.toTimeString().slice(0,8);
+  }, 1000);
+
+  // ---------------- Drawing helpers ----------------
+  function drawGrid(w, h){
+    octx.strokeStyle = 'rgba(255,255,255,0.55)';
+    octx.lineWidth = 1;
+    if (state.gridStyle === 'thirds') {
+      for (let i=1;i<3;i++){
+        octx.beginPath(); octx.moveTo(w*i/3,0); octx.lineTo(w*i/3,h); octx.stroke();
+        octx.beginPath(); octx.moveTo(0,h*i/3); octx.lineTo(w,h*i/3); octx.stroke();
+      }
+    } else if (state.gridStyle === 'grid4') {
+      for (let i=1;i<4;i++){
+        octx.beginPath(); octx.moveTo(w*i/4,0); octx.lineTo(w*i/4,h); octx.stroke();
+        octx.beginPath(); octx.moveTo(0,h*i/4); octx.lineTo(w,h*i/4); octx.stroke();
+      }
+    } else if (state.gridStyle === 'cross') {
+      octx.beginPath(); octx.moveTo(w/2-16,h/2); octx.lineTo(w/2+16,h/2); octx.stroke();
+      octx.beginPath(); octx.moveTo(w/2,h/2-16); octx.lineTo(w/2,h/2+16); octx.stroke();
+    }
+  }
+
+  function drawSafeArea(w, h){
+    if (!state.ar) return;
+    let tw = w, th = w / state.ar;
+    if (th > h) { th = h; tw = h * state.ar; }
+    const x = (w - tw)/2, y = (h - th)/2;
+    octx.strokeStyle = 'rgba(255,176,32,0.9)';
+    octx.lineWidth = 2;
+    octx.setLineDash([8,6]);
+    octx.strokeRect(x, y, tw, th);
+    octx.setLineDash([]);
+  }
+
+  let zebraOffset = 0;
+  function drawZebra(imgData, w, h){
+    const data = imgData.data;
+    const threshold = (state.zebraThreshold/100) * 255;
+    octx.save();
+    octx.fillStyle = 'rgba(0,0,0,0)';
+    // Build a mask on a temp canvas for stripes, using globalCompositeOperation trick
+    const stripeCanvas = drawZebra._c || (drawZebra._c = document.createElement('canvas'));
+    stripeCanvas.width = w; stripeCanvas.height = h;
+    const sctx = stripeCanvas.getContext('2d');
+    const maskImg = sctx.createImageData(w, h);
+    for (let i=0;i<data.length;i+=4){
+      const lum = 0.2126*data[i] + 0.7152*data[i+1] + 0.0722*data[i+2];
+      if (lum >= threshold) {
+        const px = (i/4) % w, py = Math.floor((i/4)/w);
+        const stripe = ((px + py + zebraOffset) % 16) < 8;
+        maskImg.data[i] = 0; maskImg.data[i+1]=0; maskImg.data[i+2]=0;
+        maskImg.data[i+3] = stripe ? 255 : 0;
+      }
+    }
+    sctx.putImageData(maskImg, 0, 0);
+    octx.globalAlpha = 0.9;
+    octx.drawImage(stripeCanvas, 0, 0);
+    octx.globalAlpha = 1;
+    octx.restore();
+    zebraOffset = (zebraOffset + 1) % 16;
+  }
+
+  function hexToRgb(hex){
+    const v = parseInt(hex.slice(1),16);
+    return [(v>>16)&255, (v>>8)&255, v&255];
+  }
+
+  function drawPeaking(imgData, w, h){
+    const src = imgData.data;
+    const out = octx.createImageData(w, h);
+    const thresh = 255 - (state.peakSensitivity * 2.2); // higher sensitivity -> lower threshold
+    const [pr,pg,pb] = hexToRgb(state.peakColor);
+    for (let y=1; y<h-1; y++){
+      for (let x=1; x<w-1; x++){
+        const idx = (y*w+x)*4;
+        const gx = lum(src, idx-4-4*w) - lum(src, idx+4-4*w)
+                 + 2*(lum(src, idx-4) - lum(src, idx+4))
+                 + lum(src, idx-4+4*w) - lum(src, idx+4+4*w);
+        const gy = lum(src, idx-4-4*w) - lum(src, idx-4+4*w)
+                 + 2*(lum(src, idx-4*w) - lum(src, idx+4*w))
+                 + lum(src, idx+4-4*w) - lum(src, idx+4+4*w);
+        const mag = Math.sqrt(gx*gx+gy*gy);
+        if (mag > thresh) {
+          out.data[idx] = pr; out.data[idx+1]=pg; out.data[idx+2]=pb; out.data[idx+3]=220;
+        }
+      }
+    }
+    octx.putImageData(out, 0, 0);
+  }
+  function lum(data, idx){
+    return 0.2126*data[idx] + 0.7152*data[idx+1] + 0.0722*data[idx+2];
+  }
+
+  function drawFalseColor(imgData, w, h){
+    const src = imgData.data;
+    const out = octx.createImageData(w, h);
+    for (let i=0;i<src.length;i+=4){
+      const l = lum(src, i);
+      let r=0,g=0,b=0;
+      if (l < 16){ b=255; }
+      else if (l < 64){ r=0;g=0;b=180; }
+      else if (l < 100){ g=120; b=120; }
+      else if (l < 150){ g=180; }
+      else if (l < 200){ r=200;g=200; }
+      else if (l < 235){ r=255;g=140; }
+      else { r=255; }
+      out.data[i]=r; out.data[i+1]=g; out.data[i+2]=b; out.data[i+3]=140;
+    }
+    octx.putImageData(out, 0, 0);
+  }
+
+  function drawHistogram(imgData){
+    const data = imgData.data;
+    const bins = new Array(64).fill(0);
+    for (let i=0;i<data.length;i+=16){ // sample every 4th pixel for perf
+      const l = lum(data, i);
+      bins[Math.min(63, Math.floor(l/4))]++;
+    }
+    const max = Math.max(...bins, 1);
+    hctx.clearRect(0,0,120,70);
+    hctx.fillStyle = 'rgba(255,176,32,0.85)';
+    const bw = 120/64;
+    for (let i=0;i<64;i++){
+      const bh = (bins[i]/max) * 62;
+      hctx.fillRect(i*bw, 68-bh, bw-0.5, bh);
+    }
+  }
+
+  // ---------------- Main render loop ----------------
+  let frameTimes = [];
+  function loop(now){
+    if (video.readyState >= 2 && !video.paused) {
+      const w = overlay.width, h = overlay.height;
+      octx.clearRect(0,0,w,h);
+
+      const needsPixelAnalysis = state.zebra || state.peak || state.falseColor || state.hist;
+      let imgData = null;
+      if (needsPixelAnalysis) {
+        // downscale for performance
+        const scale = (state.peak || state.falseColor) ? 1 : 1;
+        analyzeCanvas.width = w; analyzeCanvas.height = h;
+        actx.drawImage(video, 0, 0, w, h);
+        imgData = actx.getImageData(0, 0, w, h);
+      }
+
+      if (!state.cleanFeed) {
+        if (state.falseColor && imgData) drawFalseColor(imgData, w, h);
+        if (state.zebra && imgData) drawZebra(imgData, w, h);
+        if (state.peak && imgData) drawPeaking(imgData, w, h);
+        if (state.grid) drawGrid(w, h);
+        if (state.safe) drawSafeArea(w, h);
+      }
+      if (state.hist && imgData) drawHistogram(imgData);
+
+      // FPS calc
+      frameTimes.push(now);
+      if (frameTimes.length > 30) frameTimes.shift();
+      if (frameTimes.length > 1) {
+        const dt = (frameTimes[frameTimes.length-1] - frameTimes[0]) / (frameTimes.length-1);
+        fpsInfo.textContent = (1000/dt).toFixed(0) + ' fps';
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  // ---------------- Handle stream ending (cable unplugged etc) ----------------
+  video.addEventListener('emptied', () => {
+    // could reconnect UI here if needed
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && video.paused && state.stream) {
+      video.play().catch(()=>{});
+    }
+  });
+
+})();
+</script>
+</body>
+</html>
